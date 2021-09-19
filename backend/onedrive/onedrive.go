@@ -138,6 +138,11 @@ Note that the chunks will be buffered into memory.`,
 			Default:  "",
 			Advanced: true,
 		}, {
+			// 	Name:     "shared_drive",
+			// 	Help:     "Name of the shared drive",
+			// 	Default:  "",
+			// 	Advanced: true,
+			// }, {
 			Name: "expose_onenote_files",
 			Help: `Set to make OneNote files show up in directory listings.
 
@@ -535,6 +540,7 @@ type Options struct {
 	LinkType                string               `config:"link_type"`
 	LinkPassword            string               `config:"link_password"`
 	Enc                     encoder.MultiEncoder `config:"encoding"`
+	SharedDrive             string               `config:"shared_drive"`
 }
 
 // Fs represents a remote one drive
@@ -826,9 +832,44 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	})
 
 	// Get rootID
-	rootInfo, _, err := f.readMetaDataForPath(ctx, "")
-	if err != nil || rootInfo.GetID() == "" {
-		return nil, errors.Wrap(err, "failed to get root")
+	// Check if we need to set the rootInfo from a shared drive
+	var rootInfo *api.Item
+	if f.opt.SharedDrive != "" {
+		var resp *http.Response
+		var list *api.ListChildrenResponse
+		opts := rest.Opts{
+			Method:  http.MethodGet,
+			RootURL: graphAPIEndpoint[opt.Region] + "/v1.0",
+			Path:    "/me/drive/sharedWithMe",
+		}
+
+		err = f.pacer.Call(func() (bool, error) {
+			resp, err = f.srv.CallJSON(ctx, &opts, nil, &list)
+			return shouldRetry(ctx, resp, err)
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		found := false
+		for i := range list.Value {
+			item := &list.Value[i]
+			item.Name = f.opt.Enc.ToStandardName(item.GetName())
+
+			if f.opt.SharedDrive == item.Name {
+				rootInfo = item
+				found = true
+			}
+		}
+
+		if !found {
+			return nil, errors.New("shared drive " + f.opt.SharedDrive + " not found")
+		}
+	} else {
+		rootInfo, _, err = f.readMetaDataForPath(ctx, "")
+		if err != nil || rootInfo.GetID() == "" {
+			return nil, errors.Wrap(err, "failed to get root")
+		}
 	}
 
 	f.dirCache = dircache.New(root, rootInfo.GetID(), f)
